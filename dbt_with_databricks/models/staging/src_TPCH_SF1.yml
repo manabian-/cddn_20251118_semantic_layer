@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: tpch
+    database: samples
+    schema: tpch
+    tables:
+      - name: lineitem
+        identifier: LINEITEM
+      - name: orders
+        identifier: ORDERS
+      - name: customer
+        identifier: CUSTOMER
+      - name: nation
+        identifier: NATION
