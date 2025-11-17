@@ -1,0 +1,151 @@
+version: 2
+
+semantic_models:
+  - name: customer
+    description: "TPC-H customer"
+    model: ref('dim_customer') 
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_key
+    dimensions:
+      - name: customer_key
+        type: categorical
+        expr: customer_key
+      - name: customer_name
+        type: categorical
+        expr: name
+      - name: nation_name
+        type: categorical
+        expr: nation_name
+
+  - name: orders
+    description: "TPC-H orders (grain: 1 row per order)"
+    model: ref('fct_orders')
+    defaults:
+      agg_time_dimension: order_date
+    entities:
+      - name: orders
+        type: primary
+        expr: o_orderkey
+      - name: customer
+        type: foreign
+        expr: customer_key
+    dimensions:
+      # 時間
+      - name: order_date
+        type: time
+        expr: o_orderdate
+        type_params: { time_granularity: day }
+      # カテゴリ/属性
+      - name: order_key
+        type: categorical
+        expr: order_key
+    measures:
+      - name: orders_placed
+        agg: count_distinct
+        expr: o_orderkey
+
+  - name: lineitem
+    description: "TPC-H lineitem (multi-row per order)"
+    model: ref('fct_lineitem')
+    defaults:
+      agg_time_dimension: ship_date
+    entities:
+      - name: orders
+        type: primary
+        expr: l_orderkey
+    dimensions:
+      # 時間
+      - name: ship_date
+        type: time
+        expr: l_shipdate
+        type_params: { time_granularity: day }
+      # カテゴリ/属性
+      - name: return_flag
+        type: categorical
+        expr: l_returnflag
+    measures:
+      - name: gross_revenue
+        agg: sum
+        expr: l_extendedprice * (1 - l_discount)
+      - name: total_lines
+        agg: sum_boolean
+        expr: l_linenumber is not null
+      - name: orders_shipped
+        agg: count_distinct
+        expr: l_orderkey
+
+
+metrics:
+  # ----- 1. SIMPLE（総収益） -----
+  - name: total_revenue
+    label: "収益の合計"
+    type: simple
+    type_params:
+      measure:
+        name: gross_revenue
+
+  # ----- 2. RATIO（返品率） -----
+  # 下準備：simple をいくつか定義）
+  - name: total_lines_metric
+    label: "Total Lineitems"
+    type: simple
+    type_params:
+      measure: { name: total_lines }
+
+  - name: returned_lines
+    label: "Returned Lineitems"
+    type: simple
+    type_params:
+      measure: { name: total_lines }
+    filter: |
+      {{ Dimension('orders__return_flag') }} = 'R'
+
+  - name: return_rate
+    label: "返品率"
+    type: ratio
+    type_params:
+      numerator: returned_lines
+      denominator: total_lines_metric
+
+  # ----- 3. DERIVED（前日の総収益） -----
+  - name: total_revenue_prev_day
+    label: "前日の収益"
+    type: derived
+    type_params:
+      expr: prev_rev
+      metrics:
+        - name: total_revenue
+          alias: prev_rev
+          offset_window: 1 day
+
+  # ----- 4. CUMULATIVE（月内累計総収益） -----
+  - name: revenue_mtd
+    label: "月初からの累計収益"
+    type: cumulative
+    type_params:
+      measure:
+        name: gross_revenue
+        fill_nulls_with: 0
+        join_to_timespine: true
+      cumulative_type_params:
+        grain_to_date: month
+
+  # ----- 5. CONVERSION（注文→出荷90日以内達成率） -----
+  - name: order_to_ship_conversion_rate_90d
+    label: "90日内に「1回でも」出荷があった注文の割合"
+    type: conversion
+    type_params:
+      conversion_type_params:
+        entity: orders
+        calculation: conversion_rate
+        base_measure:
+          name: orders_placed
+          fill_nulls_with: 0
+          join_to_timespine: true
+        conversion_measure:
+          name: orders_shipped
+          fill_nulls_with: 0
+          join_to_timespine: true
+        window: 91 days
